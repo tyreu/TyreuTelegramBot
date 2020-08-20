@@ -20,6 +20,7 @@ namespace TyreuTelegramBot
         }
 
         private readonly TelegramBotClient Bot = new TelegramBotClient(BotData.Token);
+        private Chat Chat { get; set; }
         private readonly UpdateType[] updateTypes = { UpdateType.Message, UpdateType.CallbackQuery };
         private Command CurrentCommand { get; set; } = Command.Default;
 
@@ -90,6 +91,7 @@ namespace TyreuTelegramBot
         private async void Bot_OnMessage(object sender, MessageEventArgs e)
         {
             var message = e.Message;
+            Chat = message.Chat;
             Console.WriteLine(Logger.Log($"{message.Chat.FirstName} {message.Chat.LastName} ({message.Chat.Id}) wrote: \"{message.Text}\" on {message.Date}"));
 
             if (message.Type == MessageType.Text && message.Text.StartsWith("/"))//если сообщение является текстом и начинается с "/", то обрабатываем как команду
@@ -133,7 +135,7 @@ namespace TyreuTelegramBot
                     break;
                 case "/zip":
                     CurrentCommand = Command.Zip;
-                    Zip ??= new Zip(Bot, new ChatId(chatId));
+                    Zip ??= new Zip(Bot, Chat);
                     await Bot.SendTextMessageAsync(chatId, "Пришлите/перешлите мне файлы и я отправлю Вам архив.", replyMarkup: new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("Остановить загрузку и создать архив", "StopZip")));
                     break;
                 default:

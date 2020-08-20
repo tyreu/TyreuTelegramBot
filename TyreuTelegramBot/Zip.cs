@@ -15,14 +15,14 @@ namespace TyreuTelegramBot
         private const string DOWNLOAD_PATH = "..\\Downloaded Files";
         private const string ZIP_PATH = "..\\DownloadedFiles.zip";
         private readonly TelegramBotClient Bot;
-        public readonly ChatId ChatId;
+        public readonly Chat Chat;
 
         public List<Message> Messages { get; set; } = new List<Message>();
 
-        public Zip(TelegramBotClient bot, ChatId chatId)
+        public Zip(TelegramBotClient bot, Chat chat)
         {
             Bot = bot;
-            ChatId = chatId;
+            Chat = chat;
         }
 
         public async void CreateAndSendZip()
@@ -32,7 +32,7 @@ namespace TyreuTelegramBot
                 ZipFile.CreateFromDirectory(DOWNLOAD_PATH, ZIP_PATH);
                 Directory.Delete(DOWNLOAD_PATH, true);
                 using var fs = new FileStream(ZIP_PATH, FileMode.Open);
-                await Bot.SendDocumentAsync(ChatId, new InputOnlineFile(fs, $"{ChatId.Username}_{DateTime.Now:ddMMyyyy}.zip"), $"Архив для {ChatId.Username}");
+                await Bot.SendDocumentAsync(new ChatId(Chat.Id), new InputOnlineFile(fs, $"{Chat.Username}_{DateTime.Now:ddMMyyyy}.zip"), $"Архив для {Chat.Username}");
             }
             if (System.IO.File.Exists(ZIP_PATH))
                 System.IO.File.Delete(ZIP_PATH);
