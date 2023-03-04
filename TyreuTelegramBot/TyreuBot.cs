@@ -4,9 +4,11 @@ using System.Threading.Tasks;
 using Telegram.Bot;
 using Telegram.Bot.Args;
 using Telegram.Bot.Exceptions;
-using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
+using TyreuTelegramBot.Enums;
+using TyreuTelegramBot.Helpers;
+using TyreuTelegramBot.Services;
 
 namespace TyreuTelegramBot
 {
@@ -14,14 +16,12 @@ namespace TyreuTelegramBot
     {
 
         private readonly TelegramBotClient Bot = new TelegramBotClient(BotData.Token);
-        private Chat Chat { get; set; }
+
         private readonly UpdateType[] updateTypes = { UpdateType.Message, UpdateType.CallbackQuery };
         private Command CurrentCommand { get; set; } = Command.Default;
 
-        private Zip Zip { get; set; }
-        private Currency Currency { get; set; }
-        private Dictionary<long, int> userMessages = new Dictionary<long, int>();
-
+        private Zipper Zipper { get; set; }
+        private ChatGptService ChatGptService { get; set; }
         public TyreuBot()
         {
             Bot.OnMessage += Bot_OnMessage;
@@ -38,37 +38,25 @@ namespace TyreuTelegramBot
             Console.WriteLine(Logger.Log($"{message.Chat.FirstName} {message.Chat.LastName} ({message.Chat.Id}) chose: \"{ev.CallbackQuery.Data}\" on {message.Date}"));
             try
             {
-                switch (ev.CallbackQuery.Data)
+                CurrencyEnum? currency = Currency.TryParseStringToCurrency(ev.CallbackQuery.Data);
+                if (currency is not null)
                 {
-                    case "USD" when !userMessages.ContainsKey(message.Chat.Id):
-                        var messageId = (await Bot.SendTextMessageAsync(message.Chat.Id, Currency.GetRate(CurrencyEnum.USD))).MessageId;
-                        userMessages.Add(message.Chat.Id, messageId);
-                        CurrentCommand = Command.Default;
-                        break;
-                    case "USD" when userMessages[message.Chat.Id] != -1:
-                        await Bot.EditMessageTextAsync(message.Chat.Id, userMessages[message.Chat.Id], Currency.GetRate(CurrencyEnum.USD));
-                        CurrentCommand = Command.Default;
-                        break;
-                    case "EUR" when !userMessages.ContainsKey(message.Chat.Id):
-                        messageId = (await Bot.SendTextMessageAsync(message.Chat.Id, Currency.GetRate(CurrencyEnum.EUR))).MessageId;
-                        userMessages.Add(message.Chat.Id, messageId);
-                        CurrentCommand = Command.Default;
-                        break;
-                    case "EUR" when userMessages[message.Chat.Id] != -1:
-                        await Bot.EditMessageTextAsync(message.Chat.Id, userMessages[message.Chat.Id], Currency.GetRate(CurrencyEnum.EUR));
-                        CurrentCommand = Command.Default;
-                        break;
-                    case "StopZip" when CurrentCommand == Command.Zip:
-                        Zip?.CreateAndSendZip();
-                        CurrentCommand = Command.Default;
-                        break;
-                    default:
-                        CurrentCommand = Command.Default;
-                        break;
+                    await Bot.SendTextMessageAsync(message.Chat.Id, Currency.GetRate(currency.Value));
                 }
+                if (currency is null)
+                {
+                    Task task = ev.CallbackQuery.Data switch
+                    {
+                        "StopZip" when CurrentCommand == Command.Zip => Zipper?.CreateAndSendZip(),
+                        _ => Bot.SendTextMessageAsync(message.Chat.Id, "Неизвестная команда.")
+                    };
+                    await task;
+                }
+                CurrentCommand = Command.Default;
             }
             catch (MessageIsNotModifiedException ex)
             {
+                Console.WriteLine(ex.Message);
                 await Bot.AnswerCallbackQueryAsync(ev.CallbackQuery.Id, $"Вы уже выбрали {ev.CallbackQuery.Data}!");
             }
             catch (InvalidParameterException ex)
@@ -84,34 +72,30 @@ namespace TyreuTelegramBot
         /// </summary>
         private async void Bot_OnMessage(object sender, MessageEventArgs e)
         {
-            var message = e.Message;
-            Chat = message.Chat;
-            Console.WriteLine(Logger.Log($"{message.Chat.FirstName} {message.Chat.LastName} ({message.Chat.Id}) wrote: \"{message.Text}\" on {message.Date}"));
+            Console.WriteLine(Logger.Log($"{e.Message.Chat.FirstName} {e.Message.Chat.LastName} ({e.Message.Chat.Id}) wrote: \"{e.Message.Text}\" on {e.Message.Date}"));
 
-            if (message.Type == MessageType.Text && message.Text.StartsWith("/"))//если сообщение является текстом и начинается с "/", то обрабатываем как команду
+            if (e.Message.Type == MessageType.Text && e.Message.Text.StartsWith("/"))//если сообщение является текстом и начинается с "/", то обрабатываем как команду
             {
-                HandleCommand(message.Chat.Id, message.Text);
+                await HandleCommand(e.Message.Chat.Id, e.Message.Text);
                 return;
             }
 
-            switch (CurrentCommand)
+            Task task = CurrentCommand switch
             {
-                case Command.Default when message.Type == MessageType.Text://если на данный момент команда не выполняется и сообщение текстовое
-                    await HandleCommand(message.Chat.Id, message.Text);//обрабатываем команду
-                    break;
-                case Command.GetRate://если сейчас выполняется команда /getRate
-                    break;
-                case Command.Zip when message.Type != MessageType.Text://если сейчас выполняется /zip и сообщение не текстовое
-                    await Zip.DownloadFromMessage(message);//скачиваем вложения
-                    break;
-                case Command.Split:
-                    var text = message.Text.ToUpper().ToCharArray();
-                    foreach (var letter in text)
-                        await Bot.SendTextMessageAsync(message.Chat.Id, new string(letter, 1));
-                    break;
-                default:
-                    break;
-            }
+                //если на данный момент команда не выполняется и сообщение текстовое
+                Command.Default when e.Message.Type == MessageType.Text
+                    => HandleCommand(e.Message.Chat.Id, e.Message.Text),//обрабатываем команду
+                //если сейчас выполняется команда /getRate
+                Command.GetRate
+                    => Task.CompletedTask,
+                //если сейчас выполняется /zip и сообщение не текстовое
+                Command.Zip when e.Message.Type != MessageType.Text
+                    => (Zipper ??= new Zipper(Bot, e.Message.Chat)).DownloadFromMessage(e.Message),//скачиваем вложения
+                Command.Gpt
+                    => (ChatGptService ??= new ChatGptService()).SendMessageGPT(Bot, e.Message.Chat.Id, e.Message.Text),
+                _ => Task.CompletedTask
+            };
+            await task;
         }
 
         /// <summary>
@@ -121,30 +105,38 @@ namespace TyreuTelegramBot
         /// <param name="command">Наименование команды</param>
         private async Task HandleCommand(long chatId, string command)
         {
-            switch (command)
+            var defaultLambda = () => { CurrentCommand = Command.Default; return Task.CompletedTask; };
+            Task task = command switch
             {
-                case "/getrate":
-                    CurrentCommand = Command.GetRate;
-                    Currency ??= new Currency();
-                    var buttons = new List<InlineKeyboardButton>();
-                    foreach (var value in Enum.GetValues(typeof(CurrencyEnum)))
-                        buttons.Add(InlineKeyboardButton.WithCallbackData($"{value}"));
-
-                    await Bot.SendTextMessageAsync(chatId, "Выберите валюту", ParseMode.Default, false, false, 0, new InlineKeyboardMarkup(buttons));
-                    break;
-                case "/zip":
-                    CurrentCommand = Command.Zip;
-                    Zip ??= new Zip(Bot, Chat);
-                    await Bot.SendTextMessageAsync(chatId, "Пришлите/перешлите мне файлы и я отправлю Вам архив.", replyMarkup: new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("Остановить загрузку и создать архив", "StopZip")));
-                    break;
-                case "/split":
-                    CurrentCommand = Command.Split;
-                    await Bot.SendTextMessageAsync(chatId, "Пришлите мне текст, а я отправлю его по буквам :)");
-                    break;
-                default:
-                    CurrentCommand = Command.Default;
-                    break;
-            }
+                "/getrate" => GetRate(chatId),
+                "/zip" => Zip(chatId),
+                "/gpt" => Gpt(chatId),
+                _ => defaultLambda()
+            };
+            await task;
         }
+
+        private async Task GetRate(long chatId)
+        {
+            CurrentCommand = Command.GetRate;
+            var buttons = new List<InlineKeyboardButton>();//TODO: create extension
+            foreach (var value in Enum.GetValues(typeof(CurrencyEnum)))
+                buttons.Add(InlineKeyboardButton.WithCallbackData($"{value}"));
+            await Bot.SendTextMessageAsync(chatId, "Выберите валюту", replyMarkup: new InlineKeyboardMarkup(buttons));
+        }
+
+        private async Task Zip(long chatId)
+        {
+            CurrentCommand = Command.Zip;
+            var stopZipButton = InlineKeyboardButton.WithCallbackData("Остановить загрузку и создать архив", "StopZip");
+            await Bot.SendTextMessageAsync(chatId, "Пришлите/перешлите мне файлы и я отправлю Вам архив.", replyMarkup: new InlineKeyboardMarkup(stopZipButton));
+        }
+
+        private async Task Gpt(long chatId)
+        {
+            CurrentCommand = Command.Gpt;
+            await Bot.SendTextMessageAsync(chatId, "Отправьте боту Ваш запрос.");
+        }
+
     }
 }

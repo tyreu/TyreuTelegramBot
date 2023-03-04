@@ -6,7 +6,8 @@ namespace TyreuTelegramBot
     {
         static void Main()
         {
-            new TyreuBot();
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            _ = new TyreuBot();
             Console.ReadKey();
         }
     }
