@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types.InputFiles;
 
 namespace TyreuTelegramBot.Helpers
 {
@@ -45,7 +44,7 @@ namespace TyreuTelegramBot.Helpers
                     ZipFile.CreateFromDirectory(DOWNLOAD_PATH, ZIP_PATH);
                     Directory.Delete(DOWNLOAD_PATH, true);
                     using var fs = new FileStream(ZIP_PATH, FileMode.Open);
-                    await Bot.SendDocumentAsync(new ChatId(Chat.Id), new InputOnlineFile(fs, $"{Chat.Username}_{DateTime.Now:ddMMyyyy}.zip"), $"Архив для {Chat.Username}");
+                    await Bot.SendDocumentAsync(new ChatId(Chat.Id), new InputFileStream(fs, $"{Chat.Username}_{DateTime.Now:ddMMyyyy}.zip"), caption: $"Архив для {Chat.Username}");
                 }
             }
             if (System.IO.File.Exists(ZIP_PATH))

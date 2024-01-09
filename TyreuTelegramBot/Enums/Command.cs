@@ -6,5 +6,6 @@
         GetRate,
         Zip,
         Gpt,
+        Scirocco,
     }
 }

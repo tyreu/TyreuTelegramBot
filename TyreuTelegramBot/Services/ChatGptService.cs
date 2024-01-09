@@ -36,6 +36,8 @@ namespace TyreuTelegramBot.Services
             httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {BotData.ChatGPTToken}");
 
             // отправляем запрос
+            //Error Code 429 - Rate limit reached for requests
+            //https://stackoverflow.com/questions/75898276/openai-api-error-429-you-exceeded-your-current-quota-please-check-your-plan-a#:~:text=This%20(i.e.%2C%20429%20)%20error,limit%20of%20your%20billing%20cycle.
             using var response = await httpClient.PostAsJsonAsync(Endpoint, requestData);
 
             // если произошла ошибка, выводим сообщение об ошибке на консоль

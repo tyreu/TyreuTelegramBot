@@ -1,9 +1,15 @@
-﻿using System;
+﻿using HtmlAgilityPack;
+using HtmlAgilityPack.CssSelectors.NetCore;
+using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Telegram.Bot;
-using Telegram.Bot.Args;
 using Telegram.Bot.Exceptions;
+using Telegram.Bot.Polling;
+using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using TyreuTelegramBot.Enums;
@@ -12,90 +18,104 @@ using TyreuTelegramBot.Services;
 
 namespace TyreuTelegramBot
 {
-    public partial class TyreuBot
+    public class TyreuBot
     {
 
-        private readonly TelegramBotClient Bot = new TelegramBotClient(BotData.Token);
-
-        private readonly UpdateType[] updateTypes = { UpdateType.Message, UpdateType.CallbackQuery };
+        private readonly TelegramBotClient Bot = new(BotData.Token);
         private Command CurrentCommand { get; set; } = Command.Default;
+        private readonly CancellationTokenSource cts = new();
 
         private Zipper Zipper { get; set; }
         private ChatGptService ChatGptService { get; set; }
+
         public TyreuBot()
         {
-            Bot.OnMessage += Bot_OnMessage;
-            Bot.OnCallbackQuery += Bot_OnCallbackQuery;
-            Bot.StartReceiving(updateTypes);
+            Bot.GetUpdatesAsync().Wait();
+            var receiverOptions = new ReceiverOptions
+            {
+                AllowedUpdates = new[] { UpdateType.Message, UpdateType.CallbackQuery }
+            };
+            Bot.StartReceiving(updateHandler: HandleUpdateAsync,
+                               pollingErrorHandler: HandlePollingErrorAsync,
+                               receiverOptions: receiverOptions,
+                               cancellationToken: cts.Token);
+        }
+
+        Task HandlePollingErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
+        {
+            var ErrorMessage = exception switch
+            {
+                ApiRequestException apiRequestException => $"Telegram API Error:\n[{apiRequestException.ErrorCode}]\n{apiRequestException.Message}",
+                _ => $"{exception}"
+            };
+            Console.WriteLine(ErrorMessage);
+            return Task.CompletedTask;
         }
 
         /// <summary>
         /// Обработчик CallbackQuery Data
         /// </summary>
-        private async void Bot_OnCallbackQuery(object sender, CallbackQueryEventArgs ev)
+        private async void Bot_OnCallbackQuery(CallbackQuery callbackData)
         {
-            var message = ev.CallbackQuery.Message;
-            Console.WriteLine(Logger.Log($"{message.Chat.FirstName} {message.Chat.LastName} ({message.Chat.Id}) chose: \"{ev.CallbackQuery.Data}\" on {message.Date}"));
-            try
-            {
-                CurrencyEnum? currency = Currency.TryParseStringToCurrency(ev.CallbackQuery.Data);
-                if (currency is not null)
-                {
-                    await Bot.SendTextMessageAsync(message.Chat.Id, Currency.GetRate(currency.Value));
-                }
-                if (currency is null)
-                {
-                    Task task = ev.CallbackQuery.Data switch
-                    {
-                        "StopZip" when CurrentCommand == Command.Zip => Zipper?.CreateAndSendZip(),
-                        _ => Bot.SendTextMessageAsync(message.Chat.Id, "Неизвестная команда.")
-                    };
-                    await task;
-                }
-                CurrentCommand = Command.Default;
-            }
-            catch (MessageIsNotModifiedException ex)
-            {
-                Console.WriteLine(ex.Message);
-                await Bot.AnswerCallbackQueryAsync(ev.CallbackQuery.Id, $"Вы уже выбрали {ev.CallbackQuery.Data}!");
-            }
-            catch (InvalidParameterException ex)
-            {
-                Console.WriteLine(ex.Message);
-            }
+            var message = callbackData.Message;
+            Console.WriteLine(Logger.Log($"{message.Chat.FirstName} {message.Chat.LastName} ({message.Chat.Id}) chose: \"{callbackData.Data}\" on {message.Date}"));
 
-            await Bot.AnswerCallbackQueryAsync(ev.CallbackQuery.Id); // отсылаем пустое, чтобы убрать "часики" на кнопке
+            CurrencyEnum? currency = Currency.TryParseStringToCurrency(callbackData.Data);
+            if (currency is not null)
+            {
+                await Bot.SendTextMessageAsync(message.Chat.Id, Currency.GetRate(currency.Value));
+            }
+            if (currency is null)
+            {
+                Task task = callbackData.Data switch
+                {
+                    "StopZip" when CurrentCommand == Command.Zip => Zipper?.CreateAndSendZip(),
+                    _ => Bot.SendTextMessageAsync(message.Chat.Id, "Неизвестная команда.")
+                };
+                await task;
+            }
+            CurrentCommand = Command.Default;
+
+            await Bot.AnswerCallbackQueryAsync(callbackData.Id); // отсылаем пустое, чтобы убрать "часики" на кнопке
         }
 
         /// <summary>
         /// Обрабатывает полученные сообщения
         /// </summary>
-        private async void Bot_OnMessage(object sender, MessageEventArgs e)
+        async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
         {
-            Console.WriteLine(Logger.Log($"{e.Message.Chat.FirstName} {e.Message.Chat.LastName} ({e.Message.Chat.Id}) wrote: \"{e.Message.Text}\" on {e.Message.Date}"));
+            Console.WriteLine(Logger.Log($"{update.Message?.Chat.FirstName} {update.Message?.Chat.LastName} ({update.Message?.Chat.Id}) wrote: \"{update.Message?.Text}\" on {update.Message?.Date}"));
 
-            if (e.Message.Type == MessageType.Text && e.Message.Text.StartsWith("/"))//если сообщение является текстом и начинается с "/", то обрабатываем как команду
+            if (update.Type == UpdateType.CallbackQuery)
             {
-                await HandleCommand(e.Message.Chat.Id, e.Message.Text);
-                return;
+                Bot_OnCallbackQuery(update.CallbackQuery);
             }
 
-            Task task = CurrentCommand switch
+            else if (update.Message is not null)
             {
-                //если на данный момент команда не выполняется и сообщение текстовое
-                Command.Default when e.Message.Type == MessageType.Text
-                    => HandleCommand(e.Message.Chat.Id, e.Message.Text),//обрабатываем команду
-                //если сейчас выполняется команда /getRate
-                Command.GetRate
-                    => Task.CompletedTask,
-                //если сейчас выполняется /zip и сообщение не текстовое
-                Command.Zip when e.Message.Type != MessageType.Text
-                    => (Zipper ??= new Zipper(Bot, e.Message.Chat)).DownloadFromMessage(e.Message),//скачиваем вложения
-                Command.Gpt
-                    => (ChatGptService ??= new ChatGptService()).SendMessageGPT(Bot, e.Message.Chat.Id, e.Message.Text),
-                _ => Task.CompletedTask
-            };
-            await task;
+                if (update.Message.Type == MessageType.Text && update.Message.Text.StartsWith("/"))//если сообщение является текстом и начинается с "/", то обрабатываем как команду
+                {
+                    await HandleCommand(update.Message.Chat.Id, update.Message.Text);
+                    return;
+                }
+
+                Task task = CurrentCommand switch
+                {
+                    //если на данный момент команда не выполняется и сообщение текстовое
+                    Command.Default when update.Message.Type == MessageType.Text
+                        => HandleCommand(update.Message.Chat.Id, update.Message.Text),//обрабатываем команду
+                    //если сейчас выполняется команда /getRate
+                    Command.GetRate
+                        => Task.CompletedTask,
+                    //если сейчас выполняется /zip и сообщение не текстовое
+                    Command.Zip when update.Message.Type != MessageType.Text
+                        => (Zipper ??= new Zipper(Bot, update.Message.Chat)).DownloadFromMessage(update.Message),//скачиваем вложения
+                    Command.Gpt
+                        => (ChatGptService ??= new ChatGptService()).SendMessageGPT(Bot, update.Message.Chat.Id, update.Message.Text),
+                    _ => Task.CompletedTask
+                };
+                await task;
+            }
         }
 
         /// <summary>
@@ -105,15 +125,24 @@ namespace TyreuTelegramBot
         /// <param name="command">Наименование команды</param>
         private async Task HandleCommand(long chatId, string command)
         {
-            var defaultLambda = () => { CurrentCommand = Command.Default; return Task.CompletedTask; };
+            Task defaultLambda() { CurrentCommand = Command.Default; return Task.CompletedTask; }
             Task task = command switch
             {
                 "/getrate" => GetRate(chatId),
                 "/zip" => Zip(chatId),
                 "/gpt" => Gpt(chatId),
+                "/scirocco" => GetSciroccoAvgPrice(chatId),
                 _ => defaultLambda()
             };
             await task;
+        }
+
+        private async Task GetSciroccoAvgPrice(long chatId)
+        {
+            CurrentCommand = Command.Scirocco;
+            string url = "https://www.otomoto.pl/osobowe/volkswagen/scirocco/od-2012?search%5Bfilter_float_engine_capacity%3Ato%5D=1500&search%5Badvanced_search_expanded%5D=true";
+            var avgPrice = new HtmlWeb().Load(url).QuerySelectorAll("div > h3").Average(car => int.Parse(Regex.Replace(car.InnerText, @"\s+", "")));
+            await Bot.SendTextMessageAsync(chatId, $"Средняя цена VW Scirocco: {avgPrice:N0} zł");
         }
 
         private async Task GetRate(long chatId)

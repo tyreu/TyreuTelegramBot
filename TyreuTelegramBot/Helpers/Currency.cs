@@ -16,7 +16,7 @@ namespace TyreuTelegramBot.Helpers
             HtmlWeb web = new();
             HtmlNode tableCell = web.Load(Url).QuerySelector("div[type='nbu']");
             var commaCulture = new CultureInfo("en") { NumberFormat = { NumberDecimalSeparator = "," } };
-            return tableCell is null ? "Error." : $"Курс {currencyName}: {double.Parse(tableCell.InnerText, NumberStyles.AllowDecimalPoint, commaCulture):N2}";
+            return tableCell is null ? "Error." : $"Курс {currencyName}: {double.Parse(tableCell.InnerText[0..6], NumberStyles.AllowDecimalPoint, commaCulture):N2}";
         }
         public static CurrencyEnum? TryParseStringToCurrency(string currencyName)
         {
